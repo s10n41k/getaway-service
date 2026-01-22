@@ -1,0 +1,43 @@
+services:
+  users:
+    build:
+      context: ./users
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - CONFIG_PATH=/app/configs/config.yml
+    volumes:
+      - ./users/configs:/app/configs
+    networks:
+      - go-microservices
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - CONFIG_PATH=/app/configs/config.yml
+    volumes:
+      - ./gateway/configs:/app/configs
+    networks:
+      - go-microservices
+
+  tasks:
+    build:
+      context: ./tasks
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - CONFIG_PATH=/app/configs/config.yml
+    volumes:
+      - ./tasks/configs:/app/configs
+    networks:
+      - go-microservices
+
+networks:
+  go-microservices:
+    external: true
