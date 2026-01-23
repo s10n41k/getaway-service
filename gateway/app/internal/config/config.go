@@ -2,59 +2,64 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
 type Config struct {
-	Services ServicesConfig
-	Listen   Listen
-}
-
-type Listen struct {
-	Type    string        `yaml:"type" env-default:"port"`
-	Port    string        `yaml:"port" env-default:"3000"`
-	BindIP  string        `yaml:"bind_ip" env-default:"0.0.0.0"`
-	Timeout time.Duration `yaml:"timeout" env-default:"5s"`
-}
-
-type ServiceConfig struct {
-	Host    string
-	Port    string
-	Timeout time.Duration
-}
-
-type ServicesConfig struct {
-	Auth      ServiceConfig
-	Users     ServiceConfig
-	Tasks     ServiceConfig
-	Analytics ServiceConfig
+	Listen struct {
+		BindIP  string
+		Port    string
+		Timeout time.Duration
+	}
+	Services struct {
+		Auth struct {
+			Host    string
+			Port    string
+			Timeout time.Duration
+		}
+		Users struct {
+			Host string
+			Port string
+		}
+		Tasks struct {
+			Host string
+			Port string
+		}
+		Analytics struct {
+			Host string
+			Port string
+		}
+	}
+	SignSecret string
 }
 
 func Load() *Config {
-	return &Config{
-		Services: ServicesConfig{
-			Auth: ServiceConfig{
-				Port:    getEnv("AUTH_SERVICE_PORT", "8787"),
-				Host:    getEnv("AUTH_SERVICE_HOST", "auth-service"),
-				Timeout: parseDuration(getEnv("AUTH_SERVICE_TIMEOUT", "5s")),
-			},
-			Users: ServiceConfig{
-				Host:    getEnv("USERS_SERVICE_HOST", "users-service"),
-				Port:    getEnv("USERS_SERVICE_PORT", "8080"),
-				Timeout: parseDuration(getEnv("USERS_SERVICE_TIMEOUT", "5s")),
-			},
-			Tasks: ServiceConfig{
-				Host:    getEnv("TASKS_SERVICE_HOST", "tasks-service"),
-				Port:    getEnv("TASKS_SERVICE_PORT", "8000"),
-				Timeout: parseDuration(getEnv("TASKS_SERVICE_TIMEOUT", "10s")),
-			},
-			Analytics: ServiceConfig{
-				Host:    getEnv("ANALYTICS_SERVICE_HOST", "analytics-service"),
-				Port:    getEnv("ANALYTICS_SERVICE_PORT", "5050"),
-				Timeout: parseDuration(getEnv("ANALYTICS_SERVICE_TIMEOUT", "8s")),
-			},
-		},
-	}
+	cfg := &Config{}
+
+	// Listen config
+	cfg.Listen.BindIP = getEnv("GATEWAY_BIND_IP", "localhost")
+	cfg.Listen.Port = getEnv("GATEWAY_PORT", "8080")
+	cfg.Listen.Timeout = getDurationEnv("GATEWAY_TIMEOUT", 5*time.Second)
+
+	// Services config
+	cfg.Services.Auth.Host = getEnv("AUTH_SERVICE_HOST", "localhost")
+	cfg.Services.Auth.Port = getEnv("AUTH_SERVICE_PORT", "50051")
+	cfg.Services.Auth.Timeout = getDurationEnv("AUTH_SERVICE_TIMEOUT", 10*time.Second)
+
+	cfg.Services.Users.Host = getEnv("USERS_SERVICE_HOST", "localhost")
+	cfg.Services.Users.Port = getEnv("USERS_SERVICE_PORT", "8081")
+
+	cfg.Services.Tasks.Host = getEnv("TASKS_SERVICE_HOST", "localhost")
+	cfg.Services.Tasks.Port = getEnv("TASKS_SERVICE_PORT", "8082")
+
+	cfg.Services.Analytics.Host = getEnv("ANALYTICS_SERVICE_HOST", "localhost")
+	cfg.Services.Analytics.Port = getEnv("ANALYTICS_SERVICE_PORT", "8083")
+
+	// Signature secret
+	cfg.SignSecret = getEnv("SIGN_SECRET", "")
+
+	return cfg
 }
 
 func getEnv(key, defaultValue string) string {
@@ -64,10 +69,20 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func parseDuration(s string) time.Duration {
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 5 * time.Second
+func getDurationEnv(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if dur, err := time.ParseDuration(value); err == nil {
+			return dur
+		}
 	}
-	return d
+	return defaultValue
+}
+
+func getIntEnv(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intVal, err := strconv.Atoi(value); err == nil {
+			return intVal
+		}
+	}
+	return defaultValue
 }

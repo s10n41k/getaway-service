@@ -4,6 +4,9 @@ import (
 	"api-getaway/app/internal/config"
 	"api-getaway/app/internal/middleware"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"log/slog"
@@ -42,12 +45,24 @@ var (
 	authClient pb.AuthClient
 	authConn   *grpc.ClientConn
 	authMW     *middleware.AuthMiddleware
+	signSecret string
 	startTime  = time.Now()
 )
 
 func init() {
 	// Загружаем конфиг
 	cfg = config.Load()
+
+	// Получаем секрет для подписи из переменной окружения
+	signSecret = os.Getenv("SIGN_SECRET")
+	if signSecret == "" {
+		if cfg.SignSecret != "" {
+			signSecret = cfg.SignSecret
+			log.Println("Using config sign secret (set SIGN_SECRET env variable for production)")
+		} else {
+			log.Fatal("SIGN_SECRET environment variable is required")
+		}
+	}
 
 	// Инициализируем middleware аутентификации
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -114,6 +129,7 @@ func main() {
 	// Запуск сервера в отдельной горутине
 	go func() {
 		log.Printf("Gateway started on http://%s:%s", cfg.Listen.BindIP, cfg.Listen.Port)
+		log.Printf("Using sign secret: %s...", signSecret[:min(4, len(signSecret))])
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("Failed to start gateway:", err)
 		}
@@ -139,6 +155,42 @@ func main() {
 	}
 
 	log.Println("Gateway shutdown complete")
+}
+
+// ===== Функции для работы с подписью =====
+
+// createSignature создает HMAC-SHA256 подпись для данных
+func createSignature(data string) string {
+	h := hmac.New(sha256.New, []byte(signSecret))
+	h.Write([]byte(data))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// signRequest добавляет подпись к запросу
+func signRequest(req *http.Request, userData map[string]string) {
+	// Собираем данные для подписи
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	var parts []string
+	parts = append(parts, req.Method)
+	parts = append(parts, req.URL.Path)
+	parts = append(parts, timestamp)
+
+	// Добавляем пользовательские данные
+	if userID, ok := userData["user_id"]; ok {
+		parts = append(parts, userID)
+	}
+	if session, ok := userData["session"]; ok {
+		parts = append(parts, session)
+	}
+
+	// Создаем подпись
+	dataToSign := strings.Join(parts, "|")
+	signature := createSignature(dataToSign)
+
+	// Добавляем заголовки
+	req.Header.Set("X-Signature", signature)
+	req.Header.Set("X-Timestamp", timestamp)
+	req.Header.Set("X-Signature-Version", "1")
 }
 
 // ===== Обработчики auth (HTTP → gRPC) =====
@@ -319,15 +371,21 @@ func createSignedProxy(host, port string) gin.HandlerFunc {
 				req.Header.Del("Authorization")
 			}
 
-			// Добавляем информацию о пользователе
+			// Собираем данные пользователя для подписи
+			userData := make(map[string]string)
+
 			if userID, exists := c.Get("user_id"); exists {
-				req.Header.Set("X-User-ID", fmt.Sprintf("%v", userID))
+				userIDStr := fmt.Sprintf("%v", userID)
+				req.Header.Set("X-User-ID", userIDStr)
+				userData["user_id"] = userIDStr
 			}
 			if roles, exists := c.Get("roles"); exists {
 				req.Header.Set("X-User-Roles", fmt.Sprintf("%v", roles))
 			}
 			if session, exists := c.Get("session"); exists {
-				req.Header.Set("X-Session-ID", fmt.Sprintf("%v", session))
+				sessionStr := fmt.Sprintf("%v", session)
+				req.Header.Set("X-Session-ID", sessionStr)
+				userData["session"] = sessionStr
 			}
 			if tokenVersion, exists := c.Get("token_version"); exists {
 				req.Header.Set("X-Token-Version", fmt.Sprintf("%d", tokenVersion))
@@ -335,6 +393,9 @@ func createSignedProxy(host, port string) gin.HandlerFunc {
 			if jti, exists := c.Get("jti"); exists {
 				req.Header.Set("X-JTI", fmt.Sprintf("%v", jti))
 			}
+
+			// Добавляем подпись запроса
+			signRequest(req, userData)
 
 			// Дополнительные заголовки
 			req.Header.Set("X-Forwarded-By", "gateway")
@@ -344,6 +405,9 @@ func createSignedProxy(host, port string) gin.HandlerFunc {
 			if req.TLS != nil {
 				req.Header.Set("X-Forwarded-Proto", "https")
 			}
+
+			// Добавляем имя сервиса, от которого идет запрос
+			req.Header.Set("X-Service-Name", "gateway")
 		}
 
 		// Обслуживаем запрос через прокси
@@ -393,7 +457,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Accept, Origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Accept, Origin, Cache-Control, X-Requested-With, X-Signature, X-Timestamp, X-Service-Name")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, PATCH")
 
 		if c.Request.Method == "OPTIONS" {
@@ -420,4 +484,13 @@ func loggingMiddleware() gin.HandlerFunc {
 			userID,
 		)
 	}
+}
+
+// ===== Вспомогательные функции =====
+
+func minimum(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
